@@ -1,174 +1,187 @@
 #!/bin/bash
 
-BARRA="\033[1;36m-----------------------------------------------------\033[0m"
-SCPT_DIR="/etc/SCRIPT"
-SCPinstal="$HOME/install"
+# Colores
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+BLUE="\033[1;34m"
+PURPLE="\033[1;35m"
+CYAN="\033[1;36m"
+NC="\033[0m"
+BARRA="${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-add-apt-repository universe
-apt update -y && apt upgrade -y
+# Directorios
+SCRIPT_DIR="/etc/v2ray"
+CONFIG_DIR="/etc/v2ray"
+LOG_FILE="/var/log/v2ray/install.log"
 
-install_ini () {
-clear
-echo -e "$BARRA"
-echo -e "\033[92m        -- INSTALANDO PAQUETES NECESARIOS -- "
-echo -e "$BARRA"
-PKGS=(bc jq curl npm nodejs socat netcat netcat-traditional net-tools cowsay figlet ruby)
-for pkg in "${PKGS[@]}"; do
-    if ! dpkg -s "$pkg" &>/dev/null; then
-        apt-get install -y "$pkg" &>/dev/null
-        if dpkg -s "$pkg" &>/dev/null; then
-            ESTATUS="\033[92mINSTALADO"
-        else
-            ESTATUS="\033[91mFALLO DE INSTALACION"
-        fi
-    else
-        ESTATUS="\033[92mINSTALADO"
-    fi
-    echo -e "\033[97m  # apt-get install $pkg................... $ESTATUS "
-done
-# lolcat puede instalarse por gem también
-apt-get install -y lolcat &>/dev/null
-gem install lolcat &>/dev/null
-if dpkg -s lolcat &>/dev/null; then
-    ESTATUS="\033[92mINSTALADO"
-else
-    ESTATUS="\033[91mFALLO DE INSTALACION"
-fi
-echo -e "\033[97m  # apt-get install lolcat............... $ESTATUS "
-echo -e "$BARRA"
-echo -e "\033[92m La instalacion de paquetes necesarios ha finalizado"
-echo -e "$BARRA"
+# Crear directorios necesarios
+mkdir -p $SCRIPT_DIR
+mkdir -p $CONFIG_DIR
+mkdir -p $(dirname $LOG_FILE)
+touch $LOG_FILE
+
+print_center() {
+    local text="$1"
+    local color="${2:-$NC}"
+    local width=$(tput cols)
+    local padding=$(( ($width - ${#text}) / 2 ))
+    printf "%${padding}s" ''
+    echo -e "${color}${text}${NC}"
 }
 
-msg () {
-BRAN='\033[1;37m' && VERMELHO='\e[31m' && VERDE='\e[32m' && AMARELO='\e[33m'
-AZUL='\e[34m' && MAGENTA='\e[35m' && MAG='\033[1;36m' && NEGRITO='\e[1m' && SEMCOR='\e[0m'
- case $1 in
-  -ne)cor="${VERMELHO}${NEGRITO}" && echo -ne "${cor}${2}${SEMCOR}";;
-  -ama)cor="${AMARELO}${NEGRITO}" && echo -e "${cor}${2}${SEMCOR}";;
-  -verm)cor="${AMARELO}${NEGRITO}[!] ${VERMELHO}" && echo -e "${cor}${2}${SEMCOR}";;
-  -azu)cor="${MAG}${NEGRITO}" && echo -e "${cor}${2}${SEMCOR}";;
-  -verd)cor="${VERDE}${NEGRITO}" && echo -e "${cor}${2}${SEMCOR}";;
-  -bra)cor="${VERMELHO}" && echo -ne "${cor}${2}${SEMCOR}";;
-  "-bar2"|"-bar")cor="${VERMELHO}======================================================" && echo -e "${SEMCOR}${cor}${SEMCOR}";;
- esac
-}
-
-meu_ip () {
-MIP=$(ip addr | grep 'inet' | grep -v inet6 | grep -vE '127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | grep -o -E '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | head -1)
-MIP2=$(wget -qO- ipv4.icanhazip.com)
-[[ "$MIP" != "$MIP2" ]] && IP="$MIP2" || IP="$MIP"
-}
-
-install_v2ray () {
-    echo -e "$BARRA"
-    echo -e "\033[92m        -- INSTALANDO V2RAY -- "
-    echo -e "$BARRA"
-    bash <(curl -sL https://multi.netlify.app/v2ray.sh)
-    echo -e "$BARRA"
-    echo -e "\033[1;33m V2Ray instalado correctamente."
-    echo -e "$BARRA"
-}
-
-panel_v2ray () {
+show_banner() {
     clear
     echo -e "$BARRA"
-    figlet " Panel V2Ray " | lolcat
+    print_center "BIENVENIDO A LA INSTALACIÓN DE V2RAY" "$CYAN"
+    print_center "SCRIPT BY @SINNOMBRE22" "$YELLOW"
     echo -e "$BARRA"
-    echo -e "\033[1;36m Bienvenido al panel de administración de V2Ray"
-    echo -e "\033[1;37m 1) Ver estado del servicio V2Ray"
-    echo -e " 2) Reiniciar V2Ray"
-    echo -e " 3) Editar configuración (config.json)"
-    echo -e " 4) Ver logs"
-    echo -e " 0) Salir"
-    echo -ne "\033[1;32mSeleccione una opción: \033[0m"
-    read opcion
-    case $opcion in
-        1) systemctl status v2ray;;
-        2) systemctl restart v2ray && echo -e "\033[1;32mV2Ray reiniciado\033[0m";;
-        3) nano /etc/v2ray/config.json;;
-        4) journalctl -u v2ray --no-pager | tail -n 50;;
-        0) echo -e "\033[1;33mSaliendo del panel...\033[0m"; exit 0;;
-        *) echo -e "\033[1;31mOpción inválida\033[0m";;
-    esac
-    echo -e "\033[1;33mPulse Enter para volver al panel...\033[0m"
-    read
-    panel_v2ray
 }
 
-# INICIO DEL SCRIPT
-install_ini
-meu_ip
+install_dependencies() {
+    show_banner
+    echo -e "\n${GREEN}[*] Actualizando sistema...${NC}"
+    apt update -y &>/dev/null
+    apt upgrade -y &>/dev/null
 
+    echo -e "\n${GREEN}[*] Instalando dependencias necesarias...${NC}"
+    local packages=(curl wget socat uuid-runtime unzip net-tools python3 python3-pip)
+    
+    for package in "${packages[@]}"; do
+        echo -ne "${YELLOW}Installing ${package}...${NC}"
+        apt install -y $package &>/dev/null
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN} OK${NC}"
+        else
+            echo -e "${RED} FAILED${NC}"
+            echo "Error instalando $package" >> $LOG_FILE
+        fi
+    done
+}
+
+install_v2ray() {
+    show_banner
+    echo -e "\n${GREEN}[*] Instalando V2Ray...${NC}"
+    
+    # Descargar script oficial de instalación
+    echo -e "${YELLOW}Descargando script de instalación...${NC}"
+    curl -sL https://multi.netlify.app/v2ray.sh -o v2ray_install.sh
+    
+    if [ ! -f "v2ray_install.sh" ]; then
+        echo -e "${RED}Error: No se pudo descargar el script de instalación${NC}"
+        exit 1
+    fi
+    
+    # Dar permisos y ejecutar
+    chmod +x v2ray_install.sh
+    ./v2ray_install.sh --force
+    
+    # Verificar instalación
+    if ! command -v v2ray &>/dev/null; then
+        echo -e "${RED}Error: V2Ray no se instaló correctamente${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}[✓] V2Ray instalado correctamente${NC}"
+}
+
+config_menu() {
+    while true; do
+        show_banner
+        echo -e "\n${CYAN}PANEL DE CONFIGURACIÓN V2RAY${NC}\n"
+        echo -e "${GREEN}1.${NC} Ver estado de V2Ray"
+        echo -e "${GREEN}2.${NC} Iniciar V2Ray"
+        echo -e "${GREEN}3.${NC} Detener V2Ray"
+        echo -e "${GREEN}4.${NC} Reiniciar V2Ray"
+        echo -e "${GREEN}5.${NC} Ver configuración actual"
+        echo -e "${GREEN}6.${NC} Modificar configuración"
+        echo -e "${GREEN}7.${NC} Ver logs"
+        echo -e "${RED}0.${NC} Salir\n"
+        echo -e "$BARRA"
+        
+        read -p "Seleccione una opción: " opt
+        
+        case $opt in
+            1)
+                clear
+                echo -e "$BARRA"
+                systemctl status v2ray
+                read -n1 -r -p "Presione cualquier tecla para continuar..."
+                ;;
+            2)
+                systemctl start v2ray
+                echo -e "${GREEN}[✓] V2Ray iniciado${NC}"
+                sleep 2
+                ;;
+            3)
+                systemctl stop v2ray
+                echo -e "${YELLOW}[!] V2Ray detenido${NC}"
+                sleep 2
+                ;;
+            4)
+                systemctl restart v2ray
+                echo -e "${GREEN}[✓] V2Ray reiniciado${NC}"
+                sleep 2
+                ;;
+            5)
+                clear
+                echo -e "$BARRA"
+                cat /etc/v2ray/config.json
+                echo -e "$BARRA"
+                read -n1 -r -p "Presione cualquier tecla para continuar..."
+                ;;
+            6)
+                nano /etc/v2ray/config.json
+                systemctl restart v2ray
+                ;;
+            7)
+                clear
+                echo -e "$BARRA"
+                journalctl -u v2ray --no-pager | tail -n 50
+                echo -e "$BARRA"
+                read -n1 -r -p "Presione cualquier tecla para continuar..."
+                ;;
+            0)
+                echo -e "${YELLOW}¡Gracias por usar el script!${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Opción inválida${NC}"
+                sleep 2
+                ;;
+        esac
+    done
+}
+
+# Inicio del script
 clear
-msg -bar2
-figlet " -V2RAY-" | lolcat
-msg -bar2
-echo -e "\033[1;36mBienvenido a la instalación automatizada de V2Ray"
-echo -e "\033[1;37mEste script instalará V2Ray y mostrará un panel para administrarlo."
-echo -e "$BARRA"
+show_banner
+echo -e "\n${YELLOW}[!] Iniciando instalación de V2Ray...${NC}"
 sleep 2
 
+# Verificar si es root
+if [ "$(id -u)" != "0" ]; then
+    echo -e "${RED}Este script debe ejecutarse como root${NC}"
+    exit 1
+fi
+
+# Instalar componentes
+install_dependencies
 install_v2ray
 
-echo -e "$BARRA"
-echo -e "\033[1;33m Perfecto, utilice el panel para administrar V2Ray "
-echo -e "$BARRA"
-sleep 2
-panel_v2ray
+# Crear acceso directo
+echo '#!/bin/bash
+bash /etc/v2ray/menu.sh
+' > /usr/bin/v2ray
+chmod +x /usr/bin/v2ray
 
-rm -rf install-v2r.sh    apt update -y && apt upgrade -y
+# Guardar menú
+cp "$0" /etc/v2ray/menu.sh
+chmod +x /etc/v2ray/menu.sh
 
-    for pkg in "${PACKAGES[@]}"; do
-        if ! dpkg -s "$pkg" &>/dev/null; then
-            apt-get install "$pkg" -y &>/dev/null
-        fi
-        if dpkg -s "$pkg" &>/dev/null; then
-            ESTATUS="\033[92mINSTALADO"
-        else
-            ESTATUS="\033[91mFALLO DE INSTALACION"
-            PAQUETES_FAILED+=("$pkg")
-        fi
-        echo -e "\033[97m  # apt-get install $pkg................... $ESTATUS \033[0m"
-    done
+echo -e "\n${GREEN}[✓] Instalación completada${NC}"
+echo -e "${YELLOW}[!] Use el comando 'v2ray' para acceder al panel de control${NC}"
+sleep 3
 
-    # lolcat: intenta instalar por gem si falla apt
-    if ! command -v lolcat &>/dev/null; then
-        if command -v gem &>/dev/null; then
-            gem install lolcat &>/dev/null
-            if command -v lolcat &>/dev/null; then
-                echo -e "\033[97m  # gem install lolcat..................... \033[92mINSTALADO\033[0m"
-            else
-                echo -e "\033[97m  # gem install lolcat..................... \033[91mFALLO DE INSTALACION\033[0m"
-                PAQUETES_FAILED+=("lolcat")
-            fi
-        fi
-    fi
-
-    echo -e "$BARRA"
-    echo -e "\033[92m La instalación de paquetes necesarios ha finalizado"
-    echo -e "$BARRA"
-    if [ ${#PAQUETES_FAILED[@]} -gt 0 ]; then
-        echo -e "\033[91m Fallaron los siguientes paquetes: ${PAQUETES_FAILED[*]}"
-        echo -ne "\033[97m ¿Desea reintentar la instalación? [s/n]: "
-        read -r inst
-        if [[ $inst =~ ^[sSyY]$ ]]; then
-            PAQUETES_FAILED=()
-            install_packages
-        fi
-    fi
-}
-
-clear
-msg -bar2
-if command -v figlet &>/dev/null && command -v lolcat &>/dev/null; then
-    figlet "Bienvenido" | lolcat
-else
-    echo -e "\033[92mBienvenido\033[0m"
-fi
-echo -e "$BARRA"
-echo -e "\033[92m        -- Bienvenido al instalador V2RAY -- "
-echo -e "$BARRA"
-echo -e "\033[1;33m ¡La instalación de los paquetes ha comenzado!"
-echo -e "$BARRA"
-install_packages
+# Mostrar panel de configuración
+config_menu
