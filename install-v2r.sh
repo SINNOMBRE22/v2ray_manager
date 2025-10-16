@@ -1,77 +1,210 @@
 #!/usr/bin/env bash
-# install-v2r.sh - Instalador y Administrador profesional de V2Ray
-# Requiere: Debian/Ubuntu (apt), curl, wget, unzip, jq, qrencode, uuid-runtime
+# install-v2r.sh - Instalador y configurador de v2ray con menú configurable
+# Ejecutar como root
 set -euo pipefail
 IFS=$'\n\t'
 
-# ---------------------------
-# Configuración y constantes
-# ---------------------------
 SCRIPT_DIR="/etc/v2ray"
+MENU_CONF="${SCRIPT_DIR}/menu.conf"
 CONFIG_FILE="${SCRIPT_DIR}/config.json"
-INFO_FILE="${SCRIPT_DIR}/info.txt"
+MENU_SH="${SCRIPT_DIR}/menu.sh"
+WRAPPER="/usr/bin/v2ray"
 LOG_FILE="/var/log/v2ray/install.log"
-SERVICE_FILE="/etc/systemd/system/v2ray.service"
 BIN_DIR="/usr/local/bin"
 V2RAY_BIN="${BIN_DIR}/v2ray"
-V2CTL_BIN="${BIN_DIR}/v2ctl"
 TMP_DIR="$(mktemp -d)"
-DEFAULT_PORT=10086
+DEFAULT_UUID="$(cat /proc/sys/kernel/random/uuid)"
+DEFAULT_PORT=443
 
-# Colores
-RED="\033[1;31m"
-GREEN="\033[1;32m"
-YELLOW="\033[1;33m"
-BLUE="\033[1;34m"
-PURPLE="\033[1;35m"
-CYAN="\033[1;36m"
-NC="\033[0m"
-BARRA="${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+# Colores por defecto
+DEFAULT_CYAN="\033[1;36m"
+DEFAULT_GREEN="\033[1;32m"
+DEFAULT_YELLOW="\033[1;33m"
+DEFAULT_RED="\033[1;31m"
+DEFAULT_NC="\033[0m"
 
-# Logging básico
 log() {
-    echo -e "[$(date '+%F %T')] $*" | tee -a "${LOG_FILE}"
+  mkdir -p "$(dirname "${LOG_FILE}")"
+  echo -e "[$(date '+%F %T')] $*" | tee -a "${LOG_FILE}"
 }
 
-# Limpieza al salir
-cleanup() {
-    rm -rf "${TMP_DIR}"
-}
+cleanup(){ rm -rf "${TMP_DIR}"; }
 trap cleanup EXIT
 
-# Manejo de errores
-error_exit() {
-    local rc=$?
-    log "${RED}ERROR: Ocurrió un problema. Código de salida: ${rc}${NC}"
-    echo -e "${RED}Revisa ${LOG_FILE} para más detalles.${NC}"
-    exit "${rc}"
+ensure_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "Ejecuta como root"; exit 1
+  fi
 }
-trap error_exit ERR
 
-# ---------------------------
-# Utilidades visuales
-# ---------------------------
+# Crea menu.conf con valores editables
+create_menu_conf() {
+  mkdir -p "${SCRIPT_DIR}"
+  cat > "${MENU_CONF}" <<'EOF'
+# /etc/v2ray/menu.conf - configuracion del menu y plantilla para config.json
+# Edita estos valores y luego en el menú selecciona "Regenerar config desde plantilla"
 
-spinner() {
-    # spinner <pid> <mensaje opcional>
-    local pid=$1
-    local msg="${2:-Procesando...}"
-    local delay=0.08
-    local spinstr='|/-\'
-    printf " %s " "${msg}"
-    while kill -0 "${pid}" 2>/dev/null; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        spinstr=$temp${spinstr%"$temp"}
-        sleep "${delay}"
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
-    echo -e " ${GREEN}OK${NC}"
+# UI
+BANNER_ENABLED=true
+BANNER_COLOR="\033[1;36m"
+BANNER_ANIM=true
+
+# Colores del menu
+COLOR_OK="\033[1;32m"
+COLOR_WARN="\033[1;33m"
+COLOR_ERROR="\033[1;31m"
+COLOR_RESET="\033[0m"
+
+# Config template values (ajusta según necesites)
+PORT=443
+UUID=REPLACE_UUID
+ALTER_ID=2
+NETWORK=ws
+SECURITY=tls
+CERT_FILE="/data/v2ray.crt"
+KEY_FILE="/data/v2ray.key"
+WS_PATH="/v2r/"
+WS_HOST="dominio.com"
+DOMAIN="argentina.gob.ar"
+
+# Rutas de logs
+ACCESS_LOG="/var/log/v2ray/access.log"
+ERROR_LOG="/var/log/v2ray/error.log"
+LOG_LEVEL="info"
+
+# Menu options (puedes habilitar/deshabilitar acciones aquí)
+ENABLE_ADD_USER=true
+ENABLE_REMOVE_USER=true
+ENABLE_BACKUP=true
+ENABLE_RESTORE=true
+
+EOF
+
+  # Replace UUID placeholder
+  sed -i "s|REPLACE_UUID|${DEFAULT_UUID}|" "${MENU_CONF}"
+  chmod 600 "${MENU_CONF}"
+  log "Se creó ${MENU_CONF}"
 }
+
+# Crea config.json usando variables de menu.conf
+generate_config_from_template() {
+  # cargar valores
+  # shellcheck disable=SC1090
+  source "${MENU_CONF}"
+
+  mkdir -p "${SCRIPT_DIR}"
+  cat > "${CONFIG_FILE}" <<EOF
+{
+  "log": {
+    "access": "${ACCESS_LOG}",
+    "error": "${ERROR_LOG}",
+    "loglevel": "${LOG_LEVEL}"
+  },
+  "inbounds": [
+    {
+      "port": ${PORT},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "alterId": ${ALTER_ID},
+            "id": "${UUID}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "${NETWORK}",
+        "security": "${SECURITY}",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${CERT_FILE}",
+              "keyFile": "${KEY_FILE}"
+            }
+          ]
+        },
+        "tcpSettings": {},
+        "kcpSettings": {},
+        "httpSettings": {},
+        "wsSettings": {
+          "path": "${WS_PATH}",
+          "headers": {
+            "Host": "${WS_HOST}"
+          }
+        },
+        "quicSettings": {}
+      },
+      "domain": "${DOMAIN}"
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {},
+      "tag": "blocked"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "0.0.0.0/8",
+          "10.0.0.0/8",
+          "100.64.0.0/10",
+          "169.254.0.0/16",
+          "172.16.0.0/12",
+          "192.0.0.0/24",
+          "192.0.2.0/24",
+          "192.168.0.0/16",
+          "198.18.0.0/15",
+          "198.51.100.0/24",
+          "203.0.113.0/24",
+          "::1/128",
+          "fc00::/7",
+          "fe80::/10"
+        ],
+        "outboundTag": "blocked"
+      }
+    ]
+  }
+}
+EOF
+  chmod 640 "${CONFIG_FILE}"
+  log "Se generó ${CONFIG_FILE} desde plantilla."
+}
+
+# Crea el menu.sh (usa banner animado y lee menu.conf)
+create_menu_sh() {
+  cat > "${MENU_SH}" <<'EOF'
+#!/usr/bin/env bash
+# /etc/v2ray/menu.sh - menú configurable para v2ray
+set -euo pipefail
+IFS=$'\n\t'
+
+CONF="/etc/v2ray/menu.conf"
+CONFIG="/etc/v2ray/config.json"
+SERVICE="v2ray.service"
+LOGFILE="/var/log/v2ray/install.log"
+
+# Cargar configuración
+if [ -f "${CONF}" ]; then
+  # shellcheck disable=SC1090
+  source "${CONF}"
+else
+  echo "No existe ${CONF}. Edita /etc/v2ray/menu.conf"
+  exit 1
+fi
+
+BARRA="${BANNER_COLOR}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${COLOR_RESET}"
 
 animated_banner() {
-    local lines=(
+  if [ "${BANNER_ANIM}" = "true" ]; then
+    lines=(
 "██╗   ██╗██╗   ██╗██████╗  █████╗ ██╗   ██╗    ███╗   ███╗ █████╗ ██╗   ██╗"
 "██║   ██║██║   ██║██╔══██╗██╔══██╗██║   ██║    ████╗ ████║██╔══██╗██║   ██║"
 "██║   ██║██║   ██║██████╔╝███████║██║   ██║    ██╔████╔██║███████║██║   ██║"
@@ -80,269 +213,292 @@ animated_banner() {
 "  ╚═══╝   ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝     ╚═╝     ╚═╝╚═╝  ╚═╝  ╚═══╝  "
     )
     for l in "${lines[@]}"; do
-        echo -e "${CYAN}${l}${NC}"
-        sleep 0.04
+      echo -e "${BANNER_COLOR}${l}${COLOR_RESET}"
+      sleep 0.02
     done
-    echo -e "${BARRA}"
+  else
+    echo -e "${BANNER_COLOR}v2Ray Manager${COLOR_RESET}"
+  fi
+  echo -e "${BARRA}"
 }
 
-header() {
-    clear
-    animated_banner
-    echo -e "${BLUE}${1:-Panel de administración v2Ray}${NC}"
-    echo -e "${BARRA}"
-}
+pause(){ read -n1 -r -p "Presione cualquier tecla para continuar..."; }
 
-prompt_confirm() {
-    # prompt_confirm "Mensaje" (default: No)
-    local msg="${1:-¿Continuar?}"
-    read -rp "${msg} [y/N]: " -n 1 ans
-    echo
-    [[ "${ans,,}" = "y" ]]
-}
-
-# ---------------------------
-# Comprobaciones iniciales
-# ---------------------------
-ensure_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        echo -e "${RED}Este script debe ejecutarse como root.${NC}"
-        exit 1
-    fi
-}
-
-detect_os() {
-    if [ -f /etc/debian_version ]; then
-        OS="debian"
+show_info(){
+  clear
+  animated_banner
+  echo -e "${BANNER_COLOR}         INFORMACIÓN DE CONFIGURACIÓN${COLOR_RESET}"
+  echo -e "${BARRA}"
+  if [ -f "${CONFIG}" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      jq -r '.inbounds[0] | "Puerto: \(.port)\\nProtocolo: \(.protocol)\\nNetwork: \(.streamSettings.network)\\nSecurity: \(.streamSettings.security)\\nWS Path: \(.streamSettings.wsSettings.path)\\nHost Header: \(.streamSettings.wsSettings.headers.Host)"' "${CONFIG}" || cat "${CONFIG}"
     else
-        log "Sistema no soportado automáticamente. Continuando bajo su responsabilidad."
-        OS="unknown"
+      cat "${CONFIG}"
     fi
+  else
+    echo -e "${COLOR_WARN}No existe ${CONFIG}${COLOR_RESET}"
+  fi
+  echo -e "${BARRA}"
+  pause
 }
 
-# ---------------------------
-# Dependencias
-# ---------------------------
-install_dependencies() {
-    log "Instalando dependencias..."
-    if [ "${OS}" = "debian" ] || [ "${OS}" = "unknown" ]; then
-        apt-get update -y >>"${LOG_FILE}" 2>&1 &
-        spinner $! "Actualizando repositorios..."
-        apt-get install -y curl wget unzip jq qrencode uuid-runtime net-tools ca-certificates python3 python3-pip >>"${LOG_FILE}" 2>&1 &
-        spinner $! "Instalando paquetes requeridos..."
-    else
-        log "Instalación de dependencias no automatizada para este SO."
-    fi
+regenerate_config(){
+  echo -e "${COLOR_OK}Regenerando ${CONFIG} desde plantilla...${COLOR_RESET}"
+  /bin/bash -c 'source "${CONF}"; /bin/cat > "${CONFIG}" <<EOF
+$(sed -n '1,200p' "${CONFIG}" 2>/dev/null || true)
+EOF' 2>/dev/null || true
+  # Lógica: el script install-v2r.sh crea una función en el sistema para generar desde plantilla
+  if command -v v2rays_template_gen >/dev/null 2>&1; then
+    v2rays_template_gen
+    systemctl restart "${SERVICE}" || true
+    echo -e "${COLOR_OK}Configuración regenerada y servicio reiniciado.${COLOR_RESET}"
+  else
+    echo -e "${COLOR_WARN}No existe la herramienta de generación automática. Ejecuta el instalador para crearla.${COLOR_RESET}"
+  fi
+  pause
 }
 
-# ---------------------------
-# V2Ray: instalar, actualizar, desinstalar
-# ---------------------------
-get_latest_v2ray() {
-    local api="https://api.github.com/repos/v2fly/v2ray-core/releases/latest"
-    log "Obteniendo última versión de V2Ray..."
-    local tag
-    tag="$(curl -sSf "${api}" | jq -r '.tag_name' 2>/dev/null || true)"
-    if [ -z "${tag}" ] || [ "${tag}" = "null" ]; then
-        # fallback
-        tag="$(curl -sSf "${api}" | grep '"tag_name"' | head -n1 | cut -d'"' -f4 || true)"
-    fi
-    echo "${tag}"
+service_start(){ systemctl start "${SERVICE}" && echo -e "${COLOR_OK}Servicio iniciado${COLOR_RESET}" || echo -e "${COLOR_ERROR}No se pudo iniciar${COLOR_RESET}"; pause; }
+service_stop(){ systemctl stop "${SERVICE}" && echo -e "${COLOR_WARN}Servicio detenido${COLOR_RESET}" || echo -e "${COLOR_ERROR}No se pudo detener${COLOR_RESET}"; pause; }
+service_restart(){ systemctl restart "${SERVICE}" && echo -e "${COLOR_OK}Servicio reiniciado${COLOR_RESET}" || echo -e "${COLOR_ERROR}No se pudo reiniciar${COLOR_RESET}"; pause; }
+service_status(){ clear; systemctl status "${SERVICE}" --no-pager || true; pause; }
+
+view_config(){ clear; animated_banner; echo -e "${BANNER_COLOR} Config (${CONFIG}) ${COLOR_RESET}"; echo -e "${BARRA}"; if [ -f "${CONFIG}" ]; then jq . "${CONFIG}" || cat "${CONFIG}"; else echo "${COLOR_WARN}No existe config${COLOR_RESET}"; fi; echo -e "${BARRA}"; pause; }
+
+edit_config(){
+  if command -v nano >/dev/null 2>&1; then ${EDITOR:-nano} "${CONFIG}"; else ${EDITOR:-vi} "${CONFIG}"; fi
+  systemctl restart "${SERVICE}" || true
 }
 
-install_v2ray() {
-    header "Instalando V2Ray"
-    systemctl stop v2ray.service >/dev/null 2>&1 || true
-    systemctl disable v2ray.service >/dev/null 2>&1 || true
+edit_menu_conf(){
+  if command -v nano >/dev/null 2>&1; then ${EDITOR:-nano} "${CONF}"; else ${EDITOR:-vi} "${CONF}"; fi
+  echo -e "${COLOR_OK}Guardado. Si cambiaste valores, selecciona 'Regenerar config' para aplicar cambios.${COLOR_RESET}"
+  pause
+}
 
-    mkdir -p "${SCRIPT_DIR}" "${BIN_DIR}"
-    rm -f "${TMP_DIR}/v2ray.zip"
+backup_config(){
+  dest="/root/v2ray-config-backup-$(date +%F-%H%M%S).tar.gz"
+  tar -czf "${dest}" -C / etc/v2ray 2>/dev/null || tar -czf "${dest}" -C "${SCRIPT_DIR}" .
+  echo -e "${COLOR_OK}Backup creado en ${dest}${COLOR_RESET}"
+  pause
+}
 
-    local tag
-    tag="$(get_latest_v2ray)"
-    if [ -z "${tag}" ]; then
-        log "No fue posible obtener la versión más reciente. Abortando."
-        exit 1
-    fi
-    log "Versión obtenida: ${tag}"
+restore_config(){
+  read -rp "Ruta al backup (.tar.gz): " f
+  if [ -f "${f}" ]; then tar -xzf "${f}" -C / || tar -xzf "${f}" -C "${SCRIPT_DIR}"; systemctl restart "${SERVICE}" || true; echo -e "${COLOR_OK}Restaurado${COLOR_RESET}"; else echo -e "${COLOR_ERROR}Archivo no encontrado${COLOR_RESET}"; fi
+  pause
+}
 
-    local url="https://github.com/v2fly/v2ray-core/releases/download/${tag}/v2ray-linux-64.zip"
-    log "Descargando ${url}..."
-    wget -q --show-progress --progress=bar:force:noscroll -O "${TMP_DIR}/v2ray.zip" "${url}" 2>>"${LOG_FILE}" &
-    spinner $! "Descargando v2ray ${tag}..."
-    mkdir -p "${TMP_DIR}/v2ray"
-    unzip -o "${TMP_DIR}/v2ray.zip" -d "${TMP_DIR}/v2ray" >/dev/null 2>&1
-    mv -f "${TMP_DIR}/v2ray/v2ray" "${V2RAY_BIN}"
-    mv -f "${TMP_DIR}/v2ray/v2ctl" "${V2CTL_BIN}"
-    chmod +x "${V2RAY_BIN}" "${V2CTL_BIN}"
-    log "Binarios instalados en ${BIN_DIR}"
+view_logs(){
+  clear; animated_banner; echo -e "${BARRA}"; journalctl -u "${SERVICE}" --no-pager | tail -n 200 || true; echo -e "${BARRA}"; pause
+}
 
-    cat > "${SERVICE_FILE}" <<EOF
-[Unit]
-Description=V2Ray Service
-Documentation=https://www.v2fly.org/
-After=network.target nss-lookup.target
+add_vmess_user(){
+  if [ "${ENABLE_ADD_USER}" != "true" ]; then echo "Función deshabilitada en menu.conf"; pause; return; fi
+  read -rp "Etiqueta (ej: user1): " label
+  read -rp "Generar UUID automáticamente? [Y/n]: " gen
+  if [[ "${gen,,}" = "n" ]]; then read -rp "UUID: " uuid; else uuid=$(cat /proc/sys/kernel/random/uuid); fi
+  cp "${CONFIG}" "${CONFIG}.bak-$(date +%s)"
+  tmp="$(mktemp)"
+  jq --arg id "${uuid}" '.inbounds[0].settings.clients += [{"id":$id,"alterId":2}]' "${CONFIG}" > "${tmp}" && mv "${tmp}" "${CONFIG}"
+  systemctl restart "${SERVICE}" || true
+  echo -e "${COLOR_OK}Cliente agregado: ${uuid}${COLOR_RESET}"
+  pause
+}
 
-[Service]
-Type=simple
-User=root
-ExecStart=${V2RAY_BIN} -config ${CONFIG_FILE}
-Restart=on-failure
-RestartPreventExitStatus=23
+remove_vmess_user(){
+  if [ "${ENABLE_REMOVE_USER}" != "true" ]; then echo "Función deshabilitada en menu.conf"; pause; return; fi
+  jq -r '.inbounds[0].settings.clients[] | .id' "${CONFIG}" || true
+  read -rp "UUID a eliminar: " u
+  cp "${CONFIG}" "${CONFIG}.bak-$(date +%s)"
+  tmp="$(mktemp)"
+  jq --arg id "${u}" '.inbounds[0].settings.clients |= map(select(.id != $id))' "${CONFIG}" > "${tmp}" && mv "${tmp}" "${CONFIG}"
+  systemctl restart "${SERVICE}" || true
+  echo -e "${COLOR_OK}Eliminado (si existía)${COLOR_RESET}"
+  pause
+}
 
-[Install]
-WantedBy=multi-user.target
+main_menu(){
+  while true; do
+    clear; animated_banner
+    echo -e "${BARRA}"
+    echo -e "${COLOR_OK}1${COLOR_RESET}. Ver información"
+    echo -e "${COLOR_OK}2${COLOR_RESET}. Regenerar config desde plantilla"
+    echo -e "${COLOR_OK}3${COLOR_RESET}. Editar plantilla/menu.conf"
+    echo -e "${COLOR_OK}4${COLOR_RESET}. Editar config.json"
+    echo -e "${COLOR_OK}5${COLOR_RESET}. Ver configuración"
+    echo -e "${COLOR_OK}6${COLOR_RESET}. Añadir cliente vmess"
+    echo -e "${COLOR_OK}7${COLOR_RESET}. Eliminar cliente vmess"
+    echo -e "${COLOR_OK}8${COLOR_RESET}. Iniciar servicio"
+    echo -e "${COLOR_OK}9${COLOR_RESET}. Detener servicio"
+    echo -e "${COLOR_OK}10${COLOR_RESET}. Reiniciar servicio"
+    echo -e "${COLOR_OK}11${COLOR_RESET}. Estado del servicio"
+    echo -e "${COLOR_OK}12${COLOR_RESET}. Ver logs"
+    echo -e "${COLOR_OK}13${COLOR_RESET}. Backup configuración"
+    echo -e "${COLOR_OK}14${COLOR_RESET}. Restaurar configuración"
+    echo -e "${COLOR_ERROR}0${COLOR_RESET}. Salir"
+    echo -e "${BARRA}"
+    read -rp "Selecciona: " opt
+    case "${opt}" in
+      1) show_info;;
+      2) regenerate_config;;
+      3) edit_menu_conf;;
+      4) edit_config;;
+      5) view_config;;
+      6) add_vmess_user;;
+      7) remove_vmess_user;;
+      8) service_start;;
+      9) service_stop;;
+      10) service_restart;;
+      11) service_status;;
+      12) view_logs;;
+      13) backup_config;;
+      14) restore_config;;
+      0) break;;
+      *) echo "Opción inválida"; sleep 1;;
+    esac
+  done
+}
+
+main_menu
 EOF
 
-    systemctl daemon-reload
-    systemctl enable v2ray.service
-    log "Servicio systemd creado y habilitado."
+  chmod +x "${MENU_SH}"
+  log "Se creó ${MENU_SH}"
 }
 
-uninstall_v2ray() {
-    header "Desinstalando V2Ray"
-    if prompt_confirm "¿Desea desinstalar V2Ray y eliminar configuración (irreversible)?" ; then
-        systemctl stop v2ray.service || true
-        systemctl disable v2ray.service || true
-        rm -f "${V2RAY_BIN}" "${V2CTL_BIN}" "${SERVICE_FILE}"
-        rm -rf "${SCRIPT_DIR}"
-        systemctl daemon-reload
-        log "V2Ray desinstalado."
-        echo -e "${GREEN}Desinstalación completa.${NC}"
-    else
-        echo "Operación cancelada."
-    fi
+# Crea wrapper /usr/bin/v2ray para ejecutar el menú
+create_wrapper() {
+  cat > "${WRAPPER}" <<'EOF'
+#!/usr/bin/env bash
+if [ -f /etc/v2ray/menu.sh ]; then
+  exec bash /etc/v2ray/menu.sh
+else
+  echo "No existe /etc/v2ray/menu.sh. Ejecuta el instalador."
+  exit 1
+fi
+EOF
+  chmod +x "${WRAPPER}"
+  log "Se creó wrapper ${WRAPPER}"
 }
 
-update_v2ray() {
-    header "Actualizando V2Ray"
-    if prompt_confirm "¿Continuar con la actualización a la última versión?"; then
-        install_v2ray
-        systemctl restart v2ray.service || true
-        log "Actualización finalizada."
-        echo -e "${GREEN}V2Ray actualizado correctamente.${NC}"
-    else
-        echo "Actualización cancelada."
-    fi
-}
-
-# ---------------------------
-# Configuración y gestión de usuarios (vmess)
-# ---------------------------
-generate_uuid() {
-    if command -v uuidgen >/dev/null 2>&1; then
-        uuidgen
-    else
-        cat /proc/sys/kernel/random/uuid
-    fi
-}
-
-create_default_config() {
-    header "Creando configuración por defecto"
-    mkdir -p "${SCRIPT_DIR}"
-    local uuid port
-    uuid="$(generate_uuid)"
-    port="${DEFAULT_PORT}"
-
-    cat > "${CONFIG_FILE}" <<EOF
+# Crea utilidad que genera config.json desde menu.conf (para uso por menú)
+create_template_generator() {
+  cat > /usr/bin/v2rays_template_gen <<'EOF'
+#!/usr/bin/env bash
+CONF="/etc/v2ray/menu.conf"
+CONFIG="/etc/v2ray/config.json"
+if [ ! -f "${CONF}" ]; then echo "No existe ${CONF}"; exit 1; fi
+# shellcheck disable=SC1090
+source "${CONF}"
+cat > "${CONFIG}" <<EOF2
 {
-  "inbounds": [{
-    "port": ${port},
-    "listen": "0.0.0.0",
-    "protocol": "vmess",
-    "settings": {
-      "clients": [
-        {
-          "id": "${uuid}",
-          "alterId": 0,
-          "security": "auto"
-        }
-      ]
-    },
-    "streamSettings": {
-      "network": "tcp"
+  "log": {
+    "access": "${ACCESS_LOG}",
+    "error": "${ERROR_LOG}",
+    "loglevel": "${LOG_LEVEL}"
+  },
+  "inbounds": [
+    {
+      "port": ${PORT},
+      "protocol": "vmess",
+      "settings": {
+        "clients": [
+          {
+            "alterId": ${ALTER_ID},
+            "id": "${UUID}"
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "${NETWORK}",
+        "security": "${SECURITY}",
+        "tlsSettings": {
+          "certificates": [
+            {
+              "certificateFile": "${CERT_FILE}",
+              "keyFile": "${KEY_FILE}"
+            }
+          ]
+        },
+        "tcpSettings": {},
+        "kcpSettings": {},
+        "httpSettings": {},
+        "wsSettings": {
+          "path": "${WS_PATH}",
+          "headers": {
+            "Host": "${WS_HOST}"
+          }
+        },
+        "quicSettings": {}
+      },
+      "domain": "${DOMAIN}"
     }
-  }],
-  "outbounds": [{
-    "protocol": "freedom",
-    "settings": {}
-  }]
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {},
+      "tag": "blocked"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "0.0.0.0/8",
+          "10.0.0.0/8",
+          "100.64.0.0/10",
+          "169.254.0.0/16",
+          "172.16.0.0/12",
+          "192.0.0.0/24",
+          "192.0.2.0/24",
+          "192.168.0.0/16",
+          "198.18.0.0/15",
+          "198.51.100.0/24",
+          "203.0.113.0/24",
+          "::1/128",
+          "fc00::/7",
+          "fe80::/10"
+        ],
+        "outboundTag": "blocked"
+      }
+    ]
+  }
 }
+EOF2
+chmod 640 "${CONFIG}"
+echo "OK"
 EOF
-
-    echo "Port: ${port}" > "${INFO_FILE}"
-    echo "UUID: ${uuid}" >> "${INFO_FILE}"
-    echo "CreatedAt: $(date -Iseconds)" >> "${INFO_FILE}"
-    log "Configuración inicial creada en ${CONFIG_FILE}"
+  chmod +x /usr/bin/v2rays_template_gen
+  log "Se creó /usr/bin/v2rays_template_gen"
 }
 
-backup_config() {
-    header "Respaldo de configuración"
-    local dest="/root/v2ray-config-backup-$(date +%F-%H%M%S).tar.gz"
-    tar -czf "${dest}" -C / etc/v2ray 2>/dev/null || tar -czf "${dest}" -C "${SCRIPT_DIR}" .
-    log "Respaldo guardado en ${dest}"
-    echo -e "${GREEN}Backup creado: ${dest}${NC}"
-}
+# MAIN
+ensure_root
+mkdir -p "${SCRIPT_DIR}"
+touch "${LOG_FILE}" && chmod 640 "${LOG_FILE}"
 
-restore_config() {
-    header "Restaurar configuración"
-    read -rp "Ruta al archivo .tar.gz de backup: " file
-    if [ ! -f "${file}" ]; then
-        echo -e "${RED}Archivo no encontrado.${NC}"
-        return 1
-    fi
-    tar -xzf "${file}" -C / || tar -xzf "${file}" -C "${SCRIPT_DIR}"
-    systemctl restart v2ray.service || true
-    log "Restauración completada desde ${file}"
-    echo -e "${GREEN}Restauración completada.${NC}"
-}
+if [ ! -f "${MENU_CONF}" ]; then
+  create_menu_conf
+fi
 
-add_vmess_user() {
-    header "Agregar cliente Vmess"
-    read -rp "Etiqueta para el cliente (ej. user1): " label
-    read -rp "Puerto (ENTER para ${DEFAULT_PORT}): " port
-    port="${port:-${DEFAULT_PORT}}"
-    local uuid
-    uuid="$(generate_uuid)"
+create_menu_sh
+create_wrapper
+create_template_generator
 
-    # Asegurarse de que config exista
-    if [ ! -f "${CONFIG_FILE}" ]; then
-        echo -e "${RED}No existe ${CONFIG_FILE}. Crear configuración por defecto primero.${NC}"
-        return 1
-    fi
+# Generar config.json inicial si no existe
+if [ ! -f "${CONFIG_FILE}" ]; then
+  /usr/bin/v2rays_template_gen
+  log "Config inicial creada."
+fi
 
-    # Añadir cliente con jq
-    if ! command -v jq >/dev/null 2>&1; then
-        echo -e "${RED}jq no está instalado. Imposible modificar JSON de forma segura.${NC}"
-        return 1
-    fi
-
-    # Copia de seguridad del config actual
-    cp "${CONFIG_FILE}" "${CONFIG_FILE}.bak-$(date +%s)"
-
-    # Insertar nuevo cliente (clientes se asumen en .inbounds[0].settings.clients)
-    tmp="$(mktemp)"
-    jq --arg id "${uuid}" '.inbounds[0].settings.clients += [{"id":$id,"alterId":0,"security":"auto"}]' "${CONFIG_FILE}" > "${tmp}" && mv "${tmp}" "${CONFIG_FILE}"
-
-    # Escribir info
-    local ip
-    ip="$(curl -sS https://ifconfig.me || echo "IP_DESCONOCIDA")"
-    local vmess_json
-    vmess_json=$(jq -n --arg v "2" \
-        --arg ps "${label}" \
-        --arg add "${ip}" \
-        --arg port "${port}" \
-        --arg id "${uuid}" \
-        --arg aid "0" \
-        --arg net "tcp" \
-        '{v:$v, ps:$ps, add:$add, port:$port, id:$id, aid:$aid, net:$net, type:"none", host:"", path:""}')
-    local vmess_b64
-    vmess_b64="$(echo -n "${vmess_json}" | base64 -w 0)"
-    local vmess_link="vmess://${vmess_b64}"
-
-    # Guardar en info
-    echo -e "### Cliente: ${label} ###" >> "${INFO_FILE}"
-    echo "Label: ${label}" >> "${INFO_FILE}"
+echo "Instalación completada. Ejecuta 'v2ray' para abrir el menú (o 'sudo v2ray')."{INFO_FILE}"
     echo "Port: ${port}" >> "${INFO_FILE}"
     echo "UUID: ${uuid}" >> "${INFO_FILE}"
     echo "VMESS: ${vmess_link}" >> "${INFO_FILE}"
