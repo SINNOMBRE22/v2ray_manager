@@ -77,9 +77,9 @@ sudo gem install lolcat &>/dev/null
 echo -e "\033[97m  # apt-get install lolcat............... $ESTATUS "
 
 echo -e "$BARRA"
-echo -e "\033[92m La instalacion de paquetes necesarios ha finalizado"
+echo -e "\033[92m La instalación de paquetes necesarios ha finalizado"
 echo -e "$BARRA"
-echo -e "\033[97m Si la instalacion de paquetes tiene fallas"
+echo -e "\033[97m Si la instalación de paquetes tiene fallas"
 echo -ne "\033[97m Puede intentar de nuevo [s/n]: "
 read inst
 [[ $inst = @(s|S|y|Y) ]] && install_ini
